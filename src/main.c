@@ -3,6 +3,7 @@
 #include <signal.h>
 
 #include <dynamic.h>
+#include <reactor.h>
 
 #include "peek.h"
 

@@ -4,6 +4,7 @@ IFS=: read -a args <<< "$1"
 
 host=${args[1]}
 result=$(host "$host")
+
 if [ $? -eq 0 ]
 then
     while read line

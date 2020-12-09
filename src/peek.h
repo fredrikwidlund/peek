@@ -10,8 +10,9 @@
 
 enum
 {
-  PEEK_FLAG_DEBUG = 0x01,
-  PEEK_FLAG_LIST  = 0x02
+  PEEK_FLAG_DEBUG    = 0x01,
+  PEEK_FLAG_LIST     = 0x02,
+  PEEK_FLAG_OVERRIDE = 0x04
 };
 
 typedef struct peek_resolver peek_resolver;
@@ -36,6 +37,7 @@ struct peek
   pool        pool;
   int         pool_fd;
   size_t      resolvers;
+  stream      input;
 };
 
 void peek_construct(peek *, int, char **);

@@ -18,7 +18,7 @@ src/data.h
 
 bin_peek_SOURCES = $(PEEK_SOURCE_FILES) $(PEEK_HEADER_FILES)
 bin_peek_LDFLAGS = -pthread
-bin_peek_LDADD = -ldynamic
+bin_peek_LDADD = -ldynamic -lreactor
 
 MAINTAINERCLEANFILES = aclocal.m4 config.h.in configure Makefile.in
 maintainer-clean-local:; rm -rf autotools m4

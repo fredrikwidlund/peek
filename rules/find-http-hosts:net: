@@ -1,0 +1,17 @@
+#!/bin/bash
+
+ports=(66 80 81 443 445 457 1080 1100 1241 1352 1433 1434 1521 1944 2301 3128 3306 4000 4001 4002 4100 4433 5000 5432 5800 5801 5802 6346 6347 7001 7002 8008 8080 8443 8888 30821)
+ports_joined=$(IFS=","; echo "${ports[*]}")
+
+IFS=: read -a args <<< "$1"
+net=${args[1]}
+
+while read line
+do
+    set -- $line
+    host="$6"
+    port=$(sed 's/\/tcp//g' <<< "$4")
+    echo "host:$host"
+    echo "host:$host:tcp:$port"
+done < <(masscan --ports "$ports_joined" --rate 1000 --wait 1 "$net" 2>/dev/null | grep --line-buffered "Discovered open port")
+
