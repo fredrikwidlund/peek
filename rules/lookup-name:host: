@@ -1,0 +1,14 @@
+#!/bin/bash
+
+IFS=: read -a args <<< "$1"
+
+host=${args[1]}
+result=$(host "$host")
+if [ $? -eq 0 ]
+then
+    while read line
+    do
+        name=$(awk '{print $5}' <<< "$line" | sed 's/.$//g')
+        echo "host:$host:name:$name"        
+    done <<< "$result"
+fi

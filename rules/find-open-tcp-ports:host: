@@ -1,0 +1,6 @@
+#!/bin/bash
+
+IFS=: read -a args <<< "$1"
+host=${args[1]}
+
+echo "host:$host:tcp:80"
