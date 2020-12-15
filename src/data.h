@@ -20,8 +20,10 @@ void data_construct(data *);
 void data_destruct(data *);
 int  data_load(data *, char *);
 int  data_save(data *, char *);
+int  data_valid(char *);
 void data_add(data *, char *);
 void data_delete(data *, char *);
+void data_clear(data *);
 int  data_exists(data *, char *);
 
 #endif /* DATA_H_INCLUDED */

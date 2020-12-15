@@ -10,6 +10,7 @@ then
     while read line
     do
         name=$(awk '{print $5}' <<< "$line" | sed 's/.$//g')
-        echo "host:$host:name:$name"        
+        echo "host:$host:name:$name"
+        echo "domain:$name"
     done <<< "$result"
 fi

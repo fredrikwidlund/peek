@@ -12,7 +12,8 @@ enum
 {
   PEEK_FLAG_DEBUG    = 0x01,
   PEEK_FLAG_LIST     = 0x02,
-  PEEK_FLAG_OVERRIDE = 0x04
+  PEEK_FLAG_CLEAR    = 0x04,
+  PEEK_FLAG_OVERRIDE = 0x08
 };
 
 typedef struct peek_resolver peek_resolver;
@@ -29,6 +30,7 @@ struct peek_resolver
 struct peek
 {
   int         flags;
+  int         verbose;
   char       *state;
   data        resolved;
   data        queued;
