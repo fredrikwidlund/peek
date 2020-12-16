@@ -95,7 +95,8 @@ void data_destruct(data *data)
 int data_load(data *data, char *path)
 {
   FILE *f;
-  char *line = NULL;
+  int status = 0;
+  char *value = NULL;
   size_t size = 0;
   ssize_t n;
 
@@ -103,19 +104,19 @@ int data_load(data *data, char *path)
   if (!f)
     return -1;
 
-  while (1)
+  while (status == 0)
   {
-    n = getline(&line, &size, f);
+    n = getline(&value, &size, f);
     if (n == -1)
       break;
-    if (line[n - 1] == '\n')
-      line[n - 1] = 0;
-    data_add(data, line);
+    if (value[n - 1] == '\n')
+      value[n - 1] = 0;
+    status = data_add(data, value);
   }
 
-  free(line);
+  free(value);
   fclose(f);
-  return 0;
+  return status;
 }
 
 int data_save(data *data, char *path)
@@ -133,23 +134,25 @@ int data_save(data *data, char *path)
   return 0;
 }
 
-void data_add(data *data, char *value)
+int data_add(data *data, char *value)
 {
   char *key, *new, *after;
+
+  if (data_valid(value) == 0)
+    return -1;
 
   key = data_key(value);
   if (maps_at(&data->set, key) == 0)
   {
     list_foreach(&data->values, after)
-    {
       if (data_compare(value, after) < 0)
         break;
-    }
     new = list_insert(after, value, strlen(value) + 1);
     maps_insert(&data->set, key, (uintptr_t) new, NULL);
   }
   else
     free(key);
+  return 0;
 }
 
 void data_delete(data *data, char *value)
@@ -175,4 +178,19 @@ int data_exists(data *data, char *value)
   result = maps_at(&data->set, key);
   free(key);
   return result;
+}
+
+int data_valid(char *value)
+{
+  int delims = 0;
+
+  while (*value != '\0' && *value != '=')
+  {
+    if (!(isalnum(*value) || strchr("-_:*.", *value)))
+      return 0;
+    if (*value == ':')
+      delims++;
+    value++;
+  }
+  return delims != 0;
 }
