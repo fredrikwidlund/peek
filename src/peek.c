@@ -4,17 +4,20 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <signal.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <fnmatch.h>
-#include <sys/ioctl.h>
 #include <poll.h>
 #include <getopt.h>
-#include <sys/epoll.h>
 #include <pthread.h>
 #include <err.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <sys/epoll.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 
 #include <dynamic.h>
 #include <reactor.h>
@@ -23,8 +26,14 @@
 #include "peek.h"
 
 static void peek_update(peek *);
+static void peek_add(peek *, char *);
 
-void peek_debug(peek *peek, const char *format, ...)
+static void peek_rules_release(void *arg)
+{
+  rule_destruct(arg);
+}
+
+static void peek_debug(peek *peek, const char *format, ...)
 {
   va_list args;
 
@@ -36,6 +45,104 @@ void peek_debug(peek *peek, const char *format, ...)
     (void) fprintf(stderr, "\n");
     va_end(args);
   }
+}
+
+static void peek_stream_input(peek *peek, stream *stream)
+{
+  segment line;
+  char *value;
+
+  while (1)
+  {
+    line = stream_read_line(stream);
+    if (line.size == 0)
+      return;
+    value = strndup(line.base, line.size - 1);
+    peek_add(peek, value);
+    stream_consume(stream, line.size);
+    free(value);
+  }
+}
+
+static core_status peek_input(core_event *event)
+{
+  peek *peek = event->state;
+
+  if (event->type == STREAM_READ)
+  {
+    peek_stream_input(peek, &peek->input);
+    return CORE_OK;
+  }
+
+  stream_destruct(&peek->input);
+  peek_update(peek);
+  return CORE_ABORT;
+}
+
+static void peek_resolver_release(void *arg)
+{
+  peek_resolver *resolver = arg;
+
+  if (resolver->pid)
+  {
+    kill(resolver->pid, SIGKILL);
+    stream_destruct(&resolver->input);
+  }
+  *resolver = (peek_resolver) {0};
+}
+
+
+static core_status peek_resolver_input(core_event *event)
+{
+  peek_resolver *resolver = event->state;
+  peek *peek = resolver->peek;
+
+  if (event->type == STREAM_READ)
+  {
+    peek_stream_input(peek, &resolver->input);
+    return CORE_OK;
+  }
+
+  list_erase(resolver, peek_resolver_release);
+  peek_update(peek);
+  return CORE_ABORT;
+}
+
+static void peek_resolver_construct(peek_resolver *resolver, peek *peek, rule *rule, char *value)
+{
+  *resolver = (peek_resolver) {0};
+  resolver->peek = peek;
+  resolver->rule = rule;
+  resolver->value = value;
+
+  stream_construct(&resolver->input, peek_resolver_input, resolver);
+}
+
+static void peek_resolver_run(peek_resolver *resolver)
+{
+  int e, fd[2];
+
+  e = pipe(fd);
+  if (e == -1)
+    err(1, "pipe");
+
+  resolver->pid = fork();
+  if (resolver->pid == -1)
+    err(1, "fork");
+
+  if (resolver->pid == 0)
+  {
+    (void) close(fd[0]);
+    e = dup2(fd[1], 1);
+    if (e == -1)
+      err(1, "dup2");
+    rule_exec(resolver->rule, resolver->value);
+    err(1, "rule_exec");
+  }
+
+  (void) close(fd[1]);
+  stream_open(&resolver->input, fd[0]);
+  peek_debug(resolver->peek, "running resolver for %s %s", resolver->rule->name, resolver->value);
 }
 
 static void peek_setup(peek *peek, char *state)
@@ -53,16 +160,6 @@ static void peek_setup(peek *peek, char *state)
       err(1, "asprintf");
   }
   peek_debug(peek, "persisting state in %s", peek->state);
-}
-
-static void peek_load(peek *peek)
-{
-  int e;
-
-  peek_debug(peek, "loading state");
-  e = data_load(&peek->data, peek->state);
-  if (e == -1)
-    warn("unable to load data data points from %s", peek->state);
 }
 
 static void peek_rules(peek *peek, char *dir)
@@ -112,195 +209,61 @@ static void peek_list(peek *peek)
     (void) fprintf(stdout, "%s\n", value);
 }
 
-static void peek_add(peek *peek, char *value, int override)
+static void peek_add(peek *peek, char *input)
 {
   rule *rule;
   peek_resolver *resolver;
-  int e, matches = 0;
+  char *value;
 
-  if (data_valid(value) == 0)
+  if (data_valid(input) == 0)
   {
-    warnx("invalid value %s", value);
+    warnx("invalid value %s", input);
     return;
   }
 
-  if (data_exists(&peek->data, value))
+  if (data_exists(&peek->data, input) && (peek->flags & PEEK_FLAG_OVERRIDE) == 0)
   {
-    peek_debug(peek, "found existing value matching %s", value);
-    if (override == 0)
-      return;
-    peek_debug(peek, "overriding existing value of %s", value);
+    peek_debug(peek, "found existing value matching %s", input);
+    return;
   }
 
-  if ((data_exists(&peek->data, value) && override == 0) ||
-      data_exists(&peek->queued, value))
+  if (peek->flags & PEEK_FLAG_DRY_RUN)
+  {
+    list_foreach(&peek->rules, rule)
+      if (rule_match(rule, input))
+        (void) fprintf(stderr, "rule: %s %s\n", rule->name, input);
     return;
+  }
+
+  value = data_add(&peek->data, input);
+  (void) fprintf(stdout, "%s\n", value);
 
   list_foreach(&peek->rules, rule)
     if (rule_match(rule, value))
     {
-      if (peek->flags & PEEK_FLAG_DRY_RUN)
-        (void) fprintf(stderr, "%s %s\n", rule->name, value);
-      else
-      {
-        resolver = list_push_back(&peek->queue, NULL, sizeof *resolver);
-        resolver->peek = peek;
-        resolver->rule = rule;
-        resolver->value = strdup(value);
-        matches++;
-        peek_debug(peek, "applying rule %s to %s", rule->name, value);
-      }
+      peek_debug(peek, "applying rule %s to %s", rule->name, value);
+      resolver = list_push_back(&peek->resolvers, NULL, sizeof *resolver);
+      peek_resolver_construct(resolver, peek, rule, value);
     }
-
-  peek_debug(peek, "%d matching rules queued for %s", matches, value);
-  if (peek->flags & PEEK_FLAG_DRY_RUN)
-    return;
-  e = data_add(matches ? &peek->queued : &peek->data, value);
-  if (e == 0)
-    (void) fprintf(stdout, "%s\n", value);
-  if (e == -1)
-    warnx("invalid value %s", value);
-}
-
-static void peek_task(void *arg)
-{
-  peek_resolver *resolver = arg;
-  char *command;
-  int e;
-  FILE *f;
-  char *line = NULL;
-  size_t size = 0;
-  ssize_t n;
-
-  e = asprintf(&command, "%s %s", resolver->rule->path, resolver->value);
-  if (e == -1)
-    err(1, "asprintf");
-  peek_debug(resolver->peek, "run %s", command);
-  f = popen(command, "r");
-  if (!f)
-    err(1, "popen %s", command);
-  while (1)
-    {
-      n = getline(&line, &size, f);
-      if (n == -1)
-        break;
-      if (line[n - 1] == '\n')
-        line[n - 1] = 0;
-      peek_debug(resolver->peek, "read %s", line);
-      peek_add(resolver->peek, line, 0);
-    }
-  (void) pclose(f);
-  free(line);
-  free(command);
-}
-
-static core_status peek_poll(core_event *event)
-{
-  peek *peek = event->state;
-  peek_resolver *completed, *resolver;
-  int matches;
-
-  while (1)
-  {
-    completed = pool_collect(&peek->pool, POOL_DONTWAIT);
-    if (!completed)
-      break;
-    matches = 0;
-    list_foreach(&peek->queue, resolver)
-      if (strcmp(resolver->value, completed->value) == 0)
-        matches++;
-    if (matches == 1)
-    {
-      (void) data_add(&peek->data, completed->value);
-      data_delete(&peek->queued, completed->value);
-    }
-    free(completed->value);
-    list_erase(completed, NULL);
-    peek->resolvers --;
-  }
 
   peek_update(peek);
-  return CORE_OK;
 }
 
 static void peek_update(peek *peek)
 {
   peek_resolver *resolver;
+  int n = 0;
 
-  list_foreach(&peek->queue, resolver)
+  peek_debug(peek, "updating state");
+  list_foreach(&peek->resolvers, resolver)
   {
-    if (resolver->running)
-      continue;
-    if (peek->resolvers >= PEEK_MAX_RESOLVERS)
-    {
-      peek_debug(peek, "resolver limit reached");
-      break;
-    }
-    pool_enqueue(&peek->pool, peek_task, resolver);
-    resolver->running = 1;
-    peek->resolvers++;
-  }
-
-  if (peek->resolvers && peek->pool_fd == -1)
-  {
-    peek_debug(peek, "starting up pool");
-    peek->pool_fd = pool_fd(&peek->pool);
-    core_add(NULL, peek_poll, peek, peek->pool_fd, EPOLLIN | EPOLLET);
-  }
-  else if (peek->resolvers == 0 && peek->pool_fd >= 0)
-  {
-    peek_debug(peek, "shutting down pool");
-    core_delete(NULL, peek->pool_fd);
-    peek->pool_fd = -1;
+    if (n == PEEK_MAX_RESOLVERS)
+      return;
+    if (resolver->pid == 0)
+      peek_resolver_run(resolver);
+    n++;
   }
 }
-
-static void peek_input_destruct(peek_input *input)
-{
-  stream_destruct(&input->stream);
-}
-
-static core_status peek_input_event(core_event *event)
-{
-  peek_input *input = event->state;
-  segment line;
-  char *value;
-
-  switch (event->type)
-  {
-  case STREAM_READ:
-    while (1)
-    {
-      line = stream_read_line(&input->stream);
-      if (line.size == 0)
-        break;
-      value = strndup(line.base, line.size - 1);
-      peek_add(input->peek, value, input->override);
-      stream_consume(&input->stream, line.size);
-      free(value);
-    }
-    peek_update(input->peek);
-    return CORE_OK;
-  default:
-    peek_input_destruct(input);
-    return CORE_ABORT;
-  }
-}
-
-static void peek_input_construct(peek_input *input, peek *peek)
-{
-  input->peek = peek;
-  stream_construct(&input->stream, peek_input_event, input);
-}
-
-static void peek_input_open(peek_input *input, int fd, int override)
-{
-  input->override = override;
-  stream_open(&input->stream, fd);
-}
-
-
-/******************************/
 
 static void peek_usage(void)
 {
@@ -310,6 +273,7 @@ static void peek_usage(void)
   (void) fprintf(stderr, "peek discovery framework\n");
   (void) fprintf(stderr, "\n");
   (void) fprintf(stderr, "Options:\n");
+  (void) fprintf(stderr, "    -c PATTERN      clear matching values\n");
   (void) fprintf(stderr, "    -d              debug\n");
   (void) fprintf(stderr, "    -h              display this help\n");
   (void) fprintf(stderr, "    -l              list state (default if no other arguments)\n");
@@ -319,69 +283,22 @@ static void peek_usage(void)
   (void) fprintf(stderr, "    -s PATH         use PATH to persist state (defaults to $HOME/.peek)\n");
 }
 
-static void peek_rules_release(void *arg)
-{
-  rule_destruct(arg);
-}
-
-
-static void peek_save(peek *peek)
-{
-  char path[PATH_MAX];
-  int e;
-
-  (void) snprintf(path, sizeof path, "%s/data", peek->state);
-  e = data_save(&peek->data, path);
-  if (e == -1)
-    warn("unable to saved data data points to %s", path);
-
-  (void) snprintf(path, sizeof path, "%s/queued", peek->state);
-  e = data_save(&peek->queued, path);
-  if (e == -1)
-    warn("unable to save queued data points to %s", path);
-}
-
-static core_status peek_stream(core_event *event)
-{
-  peek *peek = event->state;
-  segment line;
-  char *value;
-
-  switch (event->type)
-  {
-  case STREAM_READ:
-    while (1)
-    {
-      line = stream_read_line(&peek->input);
-      if (line.size == 0)
-        break;
-      value = strndup(line.base, line.size - 1);
-      peek_add(peek, value, peek->flags & PEEK_FLAG_OVERRIDE ? 1 : 0);
-      stream_consume(&peek->input, line.size);
-      free(value);
-    }
-    peek_update(peek);
-    return CORE_OK;
-  default:
-    stream_close(&peek->input);
-    return CORE_ABORT;
-  }
-}
-
-/*****************************************************/
 
 static void peek_configure(peek *peek, int argc, char **argv)
 {
-  int c, i, is_stream, has_input;
+  int c, e, i, is_stream, has_input;
   char *rules = NULL, *state = NULL;
 
   while (1)
   {
-    c = getopt(argc, argv, "dhlnor:s:");
+    c = getopt(argc, argv, "cdhlnor:s:");
     if (c == -1)
       break;
     switch (c)
     {
+    case 'c':
+      peek->flags |= PEEK_FLAG_CLEAR;
+      break;
     case 'd':
       peek->flags |= PEEK_FLAG_DEBUG;
       break;
@@ -415,7 +332,19 @@ static void peek_configure(peek *peek, int argc, char **argv)
   peek_setup(peek, state);
 
   // load state
-  peek_load(peek);
+  peek_debug(peek, "loading state from %s", peek->state);
+  e = data_load(&peek->data, peek->state);
+  if (e == -1)
+    warn("unable to load data data points from %s", peek->state);
+
+  // clear values
+  if (peek->flags & PEEK_FLAG_CLEAR)
+    while (argc)
+    {
+      data_clear(&peek->data, argv[0]);
+      argc--;
+      argv++;
+    }
 
   // list data
   if (peek->flags & PEEK_FLAG_LIST || has_input == 0)
@@ -425,13 +354,13 @@ static void peek_configure(peek *peek, int argc, char **argv)
   if (has_input)
     peek_rules(peek, rules);
 
-  // add data points
+  // add data points from command line
   for (i = 0; i < argc; i ++)
-    peek_add(peek, argv[i], peek->flags & PEEK_FLAG_OVERRIDE ? 1 : 0);
+    peek_add(peek, argv[i]);
 
-  // stream input
+  // add data points from standard in
   if (is_stream)
-    peek_input_open(&peek->stdin, 0, peek->flags & PEEK_FLAG_OVERRIDE ? 1 : 0);
+    stream_open(&peek->input, 0);
 
   // resolve
   peek_update(peek);
@@ -439,27 +368,28 @@ static void peek_configure(peek *peek, int argc, char **argv)
 
 void peek_construct(peek *peek, int argc, char **argv)
 {
-  *peek = (struct peek) {.pool_fd = -1};
+  *peek = (struct peek) {.active = 1};
   data_construct(&peek->data);
-  data_construct(&peek->queued);
-  list_construct(&peek->queue);
+  list_construct(&peek->resolvers);
   list_construct(&peek->rules);
-  pool_construct(&peek->pool);
-  peek_input_construct(&peek->stdin, peek);
-  stream_construct(&peek->input, peek_stream, peek);
+  stream_construct(&peek->input, peek_input, peek);
   peek_configure(peek, argc, argv);
 }
 
 void peek_destruct(peek *peek)
 {
-  peek_save(peek);
-  free(peek->state);
-  list_destruct(&peek->queue, NULL);
-  data_destruct(&peek->queued);
-  data_destruct(&peek->data);
-  list_destruct(&peek->rules, peek_rules_release);
-  pool_destruct(&peek->pool);
-  stream_destruct(&peek->input);
-  peek_input_destruct(&peek->stdin);
-  *peek = (struct peek) {.pool_fd = -1};
+  int e;
+
+  if (peek->active)
+  {
+    peek_debug(peek, "saving state to %s", peek->state);
+    e = data_save(&peek->data, peek->state);
+    if (e == -1)
+      warn("unable to saved data data points to %s", peek->state);
+    free(peek->state);
+    data_destruct(&peek->data);
+    list_destruct(&peek->rules, peek_rules_release);
+    stream_destruct(&peek->input);
+    *peek = (struct peek) {0};
+  }
 }

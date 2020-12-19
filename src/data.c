@@ -1,8 +1,11 @@
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <ctype.h>
+#include <fnmatch.h>
 
 #include <dynamic.h>
 
@@ -95,7 +98,6 @@ void data_destruct(data *data)
 int data_load(data *data, char *path)
 {
   FILE *f;
-  int status = 0;
   char *value = NULL;
   size_t size = 0;
   ssize_t n;
@@ -104,19 +106,19 @@ int data_load(data *data, char *path)
   if (!f)
     return -1;
 
-  while (status == 0)
+  while (1)
   {
     n = getline(&value, &size, f);
     if (n == -1)
       break;
     if (value[n - 1] == '\n')
       value[n - 1] = 0;
-    status = data_add(data, value);
+    data_add(data, value);
   }
 
   free(value);
   fclose(f);
-  return status;
+  return 0;
 }
 
 int data_save(data *data, char *path)
@@ -134,25 +136,41 @@ int data_save(data *data, char *path)
   return 0;
 }
 
-int data_add(data *data, char *value)
+char *data_add(data *data, char *value)
 {
-  char *key, *new, *after;
+  char *key, *position, *after;
 
   if (data_valid(value) == 0)
-    return -1;
+    return NULL;
 
   key = data_key(value);
-  if (maps_at(&data->set, key) == 0)
+  position = (char *) maps_at(&data->set, key);
+  if (position)
   {
-    list_foreach(&data->values, after)
-      if (data_compare(value, after) < 0)
-        break;
-    new = list_insert(after, value, strlen(value) + 1);
-    maps_insert(&data->set, key, (uintptr_t) new, NULL);
-  }
-  else
     free(key);
-  return 0;
+    return NULL;
+  }
+
+  list_foreach(&data->values, after)
+    if (data_compare(value, after) < 0)
+      break;
+  position = list_insert(after, value, strlen(value) + 1);
+  maps_insert(&data->set, key, (uintptr_t) position, NULL);
+  return position;
+}
+
+void data_clear(data *data, char *pattern)
+{
+  char *value, *next;
+
+  value = list_front(&data->values);
+  while (value != list_end(&data->values))
+  {
+    next = list_next(value);
+    if (fnmatch(pattern, value, FNM_EXTMATCH) == 0)
+      list_erase(value, NULL);
+    value = next;
+  }
 }
 
 void data_delete(data *data, char *value)
@@ -186,7 +204,7 @@ int data_valid(char *value)
 
   while (*value != '\0' && *value != '=')
   {
-    if (!(isalnum(*value) || strchr("-_:*.", *value)))
+    if (!(isalnum(*value) || strchr("-_:*./", *value)))
       return 0;
     if (*value == ':')
       delims++;

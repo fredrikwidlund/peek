@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 #include <ctype.h>
 
 #include <dynamic.h>
@@ -69,3 +70,11 @@ int rule_match(rule *rule, char *value)
   return regexec(&rule->regex, value, 0, NULL, 0) == 0;
 }
 
+void rule_exec(rule *rule, char *value)
+{
+  char *delim, *arg0;
+
+  delim = strrchr(rule->path, '/');
+  arg0 = delim ? delim : rule->path;
+  (void) execl(rule->path, arg0, value, NULL);
+}

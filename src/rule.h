@@ -17,5 +17,6 @@ void rule_construct(rule *, char *);
 void rule_destruct(rule *);
 int  rule_valid(rule *);
 int  rule_match(rule *, char *);
+void rule_exec(rule *, char *);
 
 #endif /* RULE_H_INCLUDED */
