@@ -1,0 +1,21 @@
+#!/bin/bash
+
+network="$1"
+
+routers=()
+for router in $(ipcalc -S24 --no-decorate "$network")
+do
+    routers+=(${router%.*}.1 ${router%.*}.254)
+done
+
+declare -A networks
+do
+    set -- $line
+    echo $1 $4
+    if [ "$1" = "open" ] && [[ ! -v networks[$4] ]]
+    then
+        networks[$4]=1
+        echo $(ipcalc "$4"/24 -n --no-decorate)/24
+    fi
+done < <(tr ' ' '\n' <<< "${routers[@]}" |
+             masscan -iL - -oL - --ping --rate 100 --wait 1 2> /dev/null)
