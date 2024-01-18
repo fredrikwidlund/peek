@@ -25,6 +25,7 @@ typedef struct
   const char *home;
   json_t     *conf;
   json_t     *params;
+  json_t     *seen;
 
   vector_t    jobs;
   size_t      jobs_started;

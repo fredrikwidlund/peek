@@ -23,6 +23,7 @@ void poke_destruct(poke_t *poke)
   vector_clear(poke->jobs);
   json_decref(poke->conf);
   json_decref(poke->params);
+  json_decref(poke->seen);
 }
 
 void poke_load(poke_t *poke)
@@ -37,6 +38,7 @@ void poke_load(poke_t *poke)
   poke->params = json_load_file(path, 0, NULL);
   if (!poke->params)
     poke->params = json_object();
+  poke->seen = json_object();
 }
 
 void poke_save(poke_t *poke)
@@ -104,6 +106,13 @@ void poke_add(poke_t *poke, const char *value)
   char *delim;
   const char *pattern;
   json_t *command;
+
+  if (json_object_get(poke->seen, value))
+  {
+    fprintf(stderr, "[seen] %s\n", value);
+    return;
+  }
+  json_object_set_new(poke->seen, value, json_null());
 
   json_object_foreach(json_object_get(poke->conf, "rules"), pattern, command)
     poke_match_and_queue(poke, value, pattern, command);

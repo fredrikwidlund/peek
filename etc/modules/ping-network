@@ -13,6 +13,7 @@ sudo masscan -oL - --ping --rate 100 --wait 1 "$1" 2>/dev/null |
         set -- $line
         if [ "$1" = "open" ]
         then
+            echo host:$4:ping
             echo host:$4
         fi
     done

@@ -1,0 +1,14 @@
+#!/bin/bash
+
+if [[ $# -ne 1 ]]
+then
+    echo "usage: $(basename $0) network (example: $(basename $0) 192.168.1.0/24)" >&2
+    exit 1
+fi
+
+network="$1"
+ipcalc "$network" -S 32 --no-decorate |
+    while read line
+    do
+        echo host:${line%/*}
+    done
