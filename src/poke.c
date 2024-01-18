@@ -15,7 +15,7 @@
 
 void poke_construct(poke_t *poke)
 {
-  *poke = (poke_t) {.jobs = vector_null(), .jobs_limit = 5};
+  *poke = (poke_t) {.home = "./etc", .jobs = vector_null(), .jobs_limit = 5};
 }
 
 void poke_destruct(poke_t *poke)
@@ -25,28 +25,27 @@ void poke_destruct(poke_t *poke)
   json_decref(poke->params);
 }
 
-void poke_load(poke_t *poke, const char *conf)
+void poke_load(poke_t *poke)
 {
-  const char *params;
+  char path[PATH_MAX];
 
-  poke->conf = json_load_file(conf, 0, NULL);
+  snprintf(path, sizeof path, "%s/conf", poke->home);
+  poke->conf = json_load_file(path, 0, NULL);
   if (!poke->conf)
-    err(1, "unable to load configuration: %s", conf);
-  params = json_string_value(json_object_get(poke->conf, "params"));
-  if (!params)
-    errx(1, "no parameter file specified");
-  poke->params = json_load_file(params, 0, NULL);
+    err(1, "unable to load configuration: %s", path);
+  snprintf(path, sizeof path, "%s/data", poke->home);
+  poke->params = json_load_file(path, 0, NULL);
   if (!poke->params)
     poke->params = json_object();
 }
 
 void poke_save(poke_t *poke)
 {
-  const char *params;
+  char path[PATH_MAX];
   int e;
 
-  params = json_string_value(json_object_get(poke->conf, "params"));
-  e = json_dump_file(poke->params, params, JSON_INDENT(2));
+  snprintf(path, sizeof path, "%s/data", poke->home);
+  e = json_dump_file(poke->params, path, JSON_INDENT(2));
   if (e == -1)
     err(1, "json_dump_file");
 }
@@ -80,6 +79,12 @@ static void poke_match_and_queue(poke_t *poke, const char *value, const char *pa
         job.args[i] = strndup(value + match[x].rm_so, match[i].rm_eo - match[i].rm_so);
       }
     }
+
+    fprintf(stderr, "[queue] ");
+    for (i = 0; i < n; i++)
+      fprintf(stderr, "%s ", job.args[i]);
+    fprintf(stderr, "\n");
+
     poke->jobs = vector_push(poke->jobs, poke_job_t, job);
   }
   regfree(&reg);
@@ -164,13 +169,12 @@ void poke_run(poke_t *poke, int efd)
   cpid = fork();
   if (cpid == 0)
   {
-    char path[PATH_MAX] = {0};
+    char path[PATH_MAX];
 
     (void) close(fd[0]);
     dup2(fd[1], 1);
     (void) close(fd[1]);
-
-    snprintf(path, sizeof path, "%s/.poke.d/modules/%s", getenv("HOME"), job->args[0]);
+     snprintf(path, sizeof path, "%s/modules/%s", poke->home, job->args[0]);
     (void) execve(path, job->args, NULL);
     err(1, "execve: %s", job->args[0]);
   }
@@ -235,6 +239,7 @@ void poke_process(poke_t *poke)
     n = epoll_wait(efd, events, poke->jobs_limit, -1);
     if (n == -1)
       err(1, "epoll_wait");
+
     for (i = 0; i < n; i++)
       poke_result(poke, efd, events[i].data.u64);
   }

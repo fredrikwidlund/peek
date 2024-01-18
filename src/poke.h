@@ -22,6 +22,7 @@ typedef struct
 
 typedef struct
 {
+  const char *home;
   json_t     *conf;
   json_t     *params;
 
@@ -33,7 +34,7 @@ typedef struct
 
 void poke_construct(poke_t *);
 void poke_destruct(poke_t *);
-void poke_load(poke_t *, const char *);
+void poke_load(poke_t *);
 void poke_save(poke_t *);
 void poke_add(poke_t *, const char *);
 void poke_list(poke_t *);

@@ -7,7 +7,7 @@ int main(int argc, char **argv)
   int i;
 
   poke_construct(&poke);
-  poke_load(&poke, "/root/.poke.d/conf");
+  poke_load(&poke);
   if (argc <= 1)
   {
     poke_list(&poke);
