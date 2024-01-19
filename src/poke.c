@@ -183,8 +183,8 @@ void poke_run(poke_t *poke, int efd)
     (void) close(fd[0]);
     dup2(fd[1], 1);
     (void) close(fd[1]);
-     snprintf(path, sizeof path, "%s/modules/%s", poke->home, job->args[0]);
-    (void) execve(path, job->args, NULL);
+    snprintf(path, sizeof path, "%s/modules/%s", poke->home, job->args[0]);
+    (void) execv(path, job->args);
     err(1, "execve: %s", job->args[0]);
   }
   (void) close(fd[1]);
